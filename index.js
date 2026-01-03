@@ -8,7 +8,8 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildWebhooks,
-        GatewayIntentBits.GuildModeration
+        GatewayIntentBits.GuildModeration,
+        GatewayIntentBits.GuildVoiceStates
     ]
 });
 
@@ -19,6 +20,49 @@ const LOG_CHANNEL_ID = '1456841946562826403';
 const VOICE_CHANNEL_ID = '1454050373332635773';
 const SPAM_LIMIT = 5;
 const SPAM_TIME_WINDOW = 10000; // 10 ثواني
+
+// دخول الروم الصوتي
+async function joinVoiceChannel(guild) {
+    try {
+        const voiceChannel = await guild.channels.fetch(VOICE_CHANNEL_ID);
+        if (voiceChannel && voiceChannel.isVoiceBased()) {
+            const { joinVoiceChannel: connectToVoice, getVoiceConnection } = require('@discordjs/voice');
+            
+            // التحقق من الاتصال الحالي
+            const existingConnection = getVoiceConnection(guild.id);
+            if (existingConnection) {
+                // اذا موجود اتصال، نتأكد انه في نفس الروم
+                if (existingConnection.joinConfig.channelId === VOICE_CHANNEL_ID) {
+                    return;
+                }
+                // اذا في روم ثاني، نقطع الاتصال ونتصل بالروم الصحيح
+                existingConnection.destroy();
+            }
+            
+            const connection = connectToVoice({
+                channelId: voiceChannel.id,
+                guildId: guild.id,
+                adapterCreator: guild.voiceAdapterCreator,
+                selfDeaf: false,
+                selfMute: true
+            });
+            
+            console.log(`🔊 تم الدخول للروم الصوتي: ${voiceChannel.name}`);
+            
+            // اعادة الاتصال اذا انقطع
+            connection.on('stateChange', (oldState, newState) => {
+                if (newState.status === 'disconnected') {
+                    console.log('⚠️ انقطع الاتصال، محاولة اعادة الاتصال...');
+                    setTimeout(() => joinVoiceChannel(guild), 1000);
+                }
+            });
+        }
+    } catch (error) {
+        console.error('خطأ في الدخول للروم الصوتي:', error);
+        // محاولة مرة ثانية بعد 3 ثواني
+        setTimeout(() => joinVoiceChannel(guild), 3000);
+    }
+}
 
 // تتبع السبام
 const userActions = new Map();
@@ -324,6 +368,40 @@ client.on('ready', () => {
         }],
         status: 'idle' // idle = خامل
     });
+    
+    // الدخول للروم الصوتي في كل السيرفرات
+    client.guilds.cache.forEach(guild => {
+        joinVoiceChannel(guild);
+    });
 });
+
+// اذا البوت انطرد من الروم يرجع يدخل
+client.on('voiceStateUpdate', (oldState, newState) => {
+    // التحقق اذا البوت هو الي تغيرت حالته
+    if (newState.member.id === client.user.id) {
+        const targetChannelId = VOICE_CHANNEL_ID;
+        
+        // اذا البوت مو في الروم المطلوب (انطرد او انتقل او قطع)
+        if (newState.channelId !== targetChannelId) {
+            console.log('⚠️ البوت مو في الروم المطلوب، رجوع للروم...');
+            setTimeout(() => {
+                joinVoiceChannel(newState.guild);
+            }, 1000);
+        }
+    }
+});
+
+// فحص دوري كل دقيقة للتأكد ان البوت في الروم
+setInterval(() => {
+    client.guilds.cache.forEach(guild => {
+        const botVoiceState = guild.members.cache.get(client.user.id)?.voice;
+        
+        // اذا البوت مو في الروم المطلوب
+        if (!botVoiceState || botVoiceState.channelId !== VOICE_CHANNEL_ID) {
+            console.log('🔄 فحص دوري: البوت مو في الروم، اعادة الدخول...');
+            joinVoiceChannel(guild);
+        }
+    });
+}, 60000); // كل دقيقة
 
 client.login(process.env.TOKEN);
